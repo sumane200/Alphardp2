@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const dotenv = require('dotenv');
@@ -102,6 +102,103 @@ app.post('/api/vps/action', authenticate, async (req, res) => {
         }
     } catch (e) {
         res.status(500).json({ error: 'Action failed' });
+    }
+});
+
+// GET: Stream VPS Setup Logs (SSE)
+app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
+    try {
+        const data = readDB();
+        const vps = data.find(v => v.id === req.params.id);
+        if (!vps) {
+            return res.status(404).json({ error: 'VPS not found' });
+        }
+
+        // Set up Server-Sent Events headers
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+
+        // Initial connection message
+        res.write('data: [SYSTEM] SSE Connection Established.\n\n');
+        res.write('data: [SYSTEM] Sending wake-up signal to Codespace...\n\n');
+        
+        // Wake up codespace first
+        exec(`gh cs code -c "${vps.codespaceName}" --web`, { 
+            env: { ...process.env, GH_TOKEN: `ghp_${vps.token}` } 
+        });
+
+        // Poll until the codespace is Available
+        let isReady = false;
+        let retryCount = 0;
+        
+        while (!isReady && retryCount < 20) { // max 100 seconds
+            try {
+                const stdout = await runCmd(`gh cs list --json name,state`, { GH_TOKEN: `ghp_${vps.token}` });
+                const list = JSON.parse(stdout);
+                const cs = list.find(c => c.name === vps.codespaceName);
+                
+                if (cs && cs.state === 'Available') {
+                    isReady = true;
+                    res.write(`data: [SYSTEM] Codespace is ONLINE! Initiating remote SSH build...\n\n`);
+                    break;
+                } else {
+                    res.write(`data: [SYSTEM] Waiting for Codespace to boot... (Current state: ${cs ? cs.state : 'Unknown'})\n\n`);
+                    await new Promise(r => setTimeout(r, 5000));
+                    retryCount++;
+                }
+            } catch (err) {
+                res.write(`data: [ERROR] Failed to check status: ${err.message}\n\n`);
+                await new Promise(r => setTimeout(r, 5000));
+                retryCount++;
+            }
+        }
+
+        if (!isReady) {
+            res.write(`data: [ERROR] Codespace took too long to start. Aborting.\n\n`);
+            return res.end();
+        }
+
+        // The actual installation command
+        const cmd = `gh cs ssh -c "${vps.codespaceName}" -- "cd /tmp && wget -q https://raw.githubusercontent.com/sumane200/Alphardp/main/vps.sh && chmod +x vps.sh && ./vps.sh"`;
+        res.write(`data: [SYSTEM] Executing remote build script...\n\n`);
+
+        const child = spawn(cmd, {
+            shell: true,
+            env: { ...process.env, GH_TOKEN: `ghp_${vps.token}` }
+        });
+
+        child.stdout.on('data', (chunk) => {
+            const lines = chunk.toString().split('\n');
+            lines.forEach(line => {
+                if (line.trim()) {
+                    res.write(`data: ${line}\n\n`);
+                }
+            });
+        });
+
+        child.stderr.on('data', (chunk) => {
+            const lines = chunk.toString().split('\n');
+            lines.forEach(line => {
+                if (line.trim()) {
+                    res.write(`data: [ERROR] ${line}\n\n`);
+                }
+            });
+        });
+
+        child.on('close', (code) => {
+            res.write(`data: [SYSTEM] Process exited with code ${code}\n\n`);
+            res.end();
+        });
+
+        // Handle client disconnect
+        req.on('close', () => {
+            child.kill();
+        });
+
+    } catch (e) {
+        res.write(`data: [SYSTEM] Stream error: ${e.message}\n\n`);
+        res.end();
     }
 });
 
