@@ -69,7 +69,7 @@ app.get('/api/vps/status/:id', authenticate, async (req, res) => {
         const vps = data.find(v => v.id === req.params.id);
         if (!vps) return res.status(404).json({ error: 'VPS not found' });
 
-        const stdout = await runCmd(`gh cs list --json name,state`, { GH_TOKEN: vps.token });
+        const stdout = await runCmd(`gh cs list --json name,state`, { GH_TOKEN: `ghp_${vps.token}` });
         const list = JSON.parse(stdout);
         const cs = list.find(c => c.name === vps.codespaceName);
         
@@ -92,10 +92,10 @@ app.post('/api/vps/action', authenticate, async (req, res) => {
         if (!vps) return res.status(404).json({ error: 'VPS not found' });
 
         if (action === 'start') {
-            await runCmd(`gh cs code -c "${vps.codespaceName}" --web`, { GH_TOKEN: vps.token });
+            await runCmd(`gh cs code -c "${vps.codespaceName}" --web`, { GH_TOKEN: `ghp_${vps.token}` });
             res.json({ success: true, message: 'Starting VPS...' });
         } else if (action === 'stop') {
-            await runCmd(`gh cs stop -c "${vps.codespaceName}"`, { GH_TOKEN: vps.token });
+            await runCmd(`gh cs stop -c "${vps.codespaceName}"`, { GH_TOKEN: `ghp_${vps.token}` });
             res.json({ success: true, message: 'Stopping VPS...' });
         } else {
             res.status(400).json({ error: 'Invalid action' });
@@ -114,7 +114,7 @@ app.get('/api/vps/tunnel/:id', authenticate, async (req, res) => {
 
         // We use gh cs ssh to run a command remotely that fetches the log
         const cmd = `gh cs ssh -c "${vps.codespaceName}" -- "grep -m 1 -o 'tcp://[^ ]*' /tmp/vps-pinggy.log 2>/dev/null"`;
-        const stdout = await runCmd(cmd, { GH_TOKEN: vps.token });
+        const stdout = await runCmd(cmd, { GH_TOKEN: `ghp_${vps.token}` });
         
         const url = stdout.trim();
         if (url) {
@@ -127,6 +127,6 @@ app.get('/api/vps/tunnel/:id', authenticate, async (req, res) => {
     }
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
 });
