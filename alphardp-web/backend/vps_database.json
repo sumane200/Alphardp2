@@ -8,25 +8,25 @@
   {
     "id": "2",
     "name": "VPS02 (16GB RAM)",
-    "token": "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",
+    "token": "YOUR_TOKEN_WITHOUT_GHP_PREFIX",
     "codespaceName": "orange-funicular-4qw9xrvj9rj4hj756"
   },
   {
     "id": "3",
     "name": "VPS 03 (8GB)",
-    "token": "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",
+    "token": "YOUR_TOKEN_WITHOUT_GHP_PREFIX",
     "codespaceName": "upgraded-space-trout-96jr6qv9j7vjf74vq"
   },
   {
     "id": "4",
     "name": "VPS 04 (16GB RAM)",
-    "token": "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",
+    "token": "YOUR_TOKEN_WITHOUT_GHP_PREFIX",
     "codespaceName": "psychic-fishstick-5vxjprj4r9r7f45pj"
   },
   {
     "id": "5",
     "name": "VPS 05",
-    "token": "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",
+    "token": "YOUR_TOKEN_WITHOUT_GHP_PREFIX",
     "codespaceName": "fuzzy-space-telegram-pgjrvv94q67c66vr"
   }
 ]
