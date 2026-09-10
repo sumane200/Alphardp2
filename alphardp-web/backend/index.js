@@ -91,7 +91,7 @@ app.post('/api/vps/action', authenticate, async (req, res) => {
         if (!vps) return res.status(404).json({ error: 'VPS not found' });
 
         if (action === 'start') {
-            await runCmd(`gh cs code -c "${vps.codespaceName}" --web`, { GH_TOKEN: `ghp_${vps.token}` });
+            await runCmd(`gh api -X POST /user/codespaces/${vps.codespaceName}/starts`, { GH_TOKEN: `ghp_${vps.token}` });
             res.json({ success: true, message: 'Starting VPS...' });
         } else if (action === 'stop') {
             await runCmd(`gh cs stop -c "${vps.codespaceName}"`, { GH_TOKEN: `ghp_${vps.token}` });
@@ -122,8 +122,8 @@ app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
         res.write('data: [SYSTEM] SSE Connection Established.\n\n');
         res.write('data: [SYSTEM] Sending wake-up signal to Codespace...\n\n');
         
-        // Wake up codespace first
-        exec(`gh cs code -c "${vps.codespaceName}" --web`, { 
+        // Wake up codespace first using GitHub API directly (avoids browser launch errors in container)
+        exec(`gh api -X POST /user/codespaces/${vps.codespaceName}/starts`, { 
             env: { ...process.env, GH_TOKEN: `ghp_${vps.token}` } 
         });
 
@@ -143,6 +143,12 @@ app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
                     break;
                 } else {
                     res.write(`data: [SYSTEM] Waiting for Codespace to boot... (Current state: ${cs ? cs.state : 'Unknown'})\n\n`);
+                    // If it's suspended, send the start API call again just in case
+                    if (cs && (cs.state === 'Suspended' || cs.state === 'Shutdown')) {
+                        exec(`gh api -X POST /user/codespaces/${vps.codespaceName}/starts`, { 
+                            env: { ...process.env, GH_TOKEN: `ghp_${vps.token}` } 
+                        });
+                    }
                     await new Promise(r => setTimeout(r, 5000));
                     retryCount++;
                 }
