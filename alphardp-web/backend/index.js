@@ -172,9 +172,21 @@ app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
             return res.end();
         }
 
-        // The actual installation command - same approach as the bat file
-        const cmd = `gh cs ssh -c "${vps.codespaceName}" -- "cd /tmp && wget -q https://raw.githubusercontent.com/sumane200/Alphardp/main/vps.sh && chmod +x vps.sh && ./vps.sh"`;
-        res.write(`data: [SYSTEM] Executing remote build script...\n\n`);
+        // Step 1: Restart xrdp (exactly like the bat file)
+        res.write('data: [SYSTEM] Starting xrdp service...\n\n');
+        try {
+            await runCmd(`gh cs ssh -c "${vps.codespaceName}" -- "sudo service xrdp restart > /dev/null 2>&1; sleep 2; sudo service xrdp start > /dev/null 2>&1 || true"`, { GH_TOKEN: `ghp_${vps.token}` });
+            res.write('data: [SYSTEM] xrdp is running!\n\n');
+        } catch (e) {
+            res.write('data: [SYSTEM] xrdp start attempted (may already be running).\n\n');
+        }
+
+        // Step 2: Launch Pinggy reverse tunnel in background (exactly like the bat file)
+        res.write('data: [SYSTEM] Launching Pinggy tunnel...\n\n');
+        const tunnelCmd = `gh cs ssh -c "${vps.codespaceName}" -- "pkill -f pinggy 2>/dev/null; rm -f /tmp/vps-pinggy.log; nohup ssh -p 443 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -R0:localhost:3389 tcp@a.pinggy.io > /tmp/vps-pinggy.log 2>&1 &"`;
+
+        const cmd = tunnelCmd;
+        res.write('data: [SYSTEM] Tunnel launched! Waiting for address...\n\n');
 
         const child = spawn(cmd, {
             shell: true,
