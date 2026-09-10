@@ -14,9 +14,8 @@ const DB_PATH = path.join(__dirname, 'vps_database.json');
 app.use(cors());
 app.use(express.json());
 
-// API Key Middleware for security (since it's public on Railway)
 const authenticate = (req, res, next) => {
-    const apiKey = req.headers['x-api-key'];
+    const apiKey = req.headers['x-api-key'] || req.query.api_key;
     if (!process.env.API_SECRET) {
         return next(); // Skip if no secret configured
     }
