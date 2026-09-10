@@ -99,7 +99,7 @@ app.post('/api/vps/action', authenticate, async (req, res) => {
             await runCmd(`gh api -X POST /user/codespaces/${vps.codespaceName}/starts`, { GH_TOKEN: `ghp_${vps.token}` });
             res.json({ success: true, message: 'Starting VPS...' });
         } else if (action === 'stop') {
-            await runCmd(`gh cs stop -c "${vps.codespaceName}"`, { GH_TOKEN: `ghp_${vps.token}` });
+            await runCmd(`gh api -X POST /user/codespaces/${vps.codespaceName}/stops`, { GH_TOKEN: `ghp_${vps.token}` });
             res.json({ success: true, message: 'Stopping VPS...' });
         } else {
             res.status(400).json({ error: 'Invalid action' });
@@ -125,37 +125,50 @@ app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
 
         // Initial connection message
         res.write('data: [SYSTEM] SSE Connection Established.\n\n');
-        res.write('data: [SYSTEM] Starting Codespace (this may take 30-60 seconds)...\n\n');
-        
-        // Use "gh cs start" - exactly like the .bat file does it.
-        // This command blocks until the codespace is fully running and then exits.
-        try {
-            await runCmd(`gh cs start -c "${vps.codespaceName}"`, { GH_TOKEN: `ghp_${vps.token}` });
-            res.write('data: [SYSTEM] Codespace started successfully!\n\n');
-        } catch (startErr) {
-            // gh cs start returns an error if it's already running - that's fine, continue anyway
-            res.write('data: [SYSTEM] Codespace may already be running. Continuing...\n\n');
-        }
+        res.write('data: [SYSTEM] Sending wake-up signal to Codespace...\n\n');
 
-        // Test SSH connectivity first (like the bat file does)
-        res.write('data: [SYSTEM] Testing SSH connection...\n\n');
+        // Fire start API call (non-blocking)
+        exec(`gh api -X POST /user/codespaces/${vps.codespaceName}/starts`, {
+            env: { ...process.env, GH_TOKEN: `ghp_${vps.token}` }
+        });
+
+        // Poll via gh cs list until state is Available (max 24 x 5s = 120s)
+        res.write('data: [SYSTEM] Waiting for Codespace to boot...\n\n');
         let sshOk = false;
-        for (let i = 0; i < 15; i++) {
+        for (let i = 0; i < 24; i++) {
+            await new Promise(r => setTimeout(r, 5000));
             try {
-                const test = await runCmd(`gh cs ssh -c "${vps.codespaceName}" -- "echo CONNECTION_OK"`, { GH_TOKEN: `ghp_${vps.token}` });
-                if (test.includes('CONNECTION_OK')) {
-                    sshOk = true;
-                    res.write('data: [SYSTEM] SSH connection established!\n\n');
-                    break;
+                const listOut = await runCmd(`gh cs list --json name,state`, { GH_TOKEN: `ghp_${vps.token}` });
+                const list = JSON.parse(listOut);
+                const cs = list.find(c => c.name === vps.codespaceName);
+                const state = cs ? cs.state : 'Unknown';
+                res.write(`data: [SYSTEM] Codespace state: ${state}\n\n`);
+
+                if (state === 'Available') {
+                    // Quick SSH test
+                    try {
+                        const test = await runCmd(`gh cs ssh -c "${vps.codespaceName}" -- "echo CONNECTION_OK"`, { GH_TOKEN: `ghp_${vps.token}` });
+                        if (test.includes('CONNECTION_OK')) {
+                            sshOk = true;
+                            res.write('data: [SYSTEM] SSH connection established! Starting build...\n\n');
+                            break;
+                        }
+                    } catch (sshErr) {
+                        res.write('data: [SYSTEM] SSH not ready yet, retrying...\n\n');
+                    }
+                } else if (state === 'Shutdown' || state === 'Suspended') {
+                    // Re-send start signal if it didn't take
+                    exec(`gh api -X POST /user/codespaces/${vps.codespaceName}/starts`, {
+                        env: { ...process.env, GH_TOKEN: `ghp_${vps.token}` }
+                    });
                 }
-            } catch (e) {
-                // keep trying
+            } catch (pollErr) {
+                res.write(`data: [SYSTEM] Polling error: ${pollErr.message}\n\n`);
             }
-            await new Promise(r => setTimeout(r, 2000));
         }
 
         if (!sshOk) {
-            res.write('data: [ERROR] Could not establish SSH connection. Codespace may not be reachable.\n\n');
+            res.write('data: [ERROR] Could not establish SSH connection after 2 minutes. Aborting.\n\n');
             return res.end();
         }
 
