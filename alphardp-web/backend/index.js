@@ -181,45 +181,26 @@ app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
             res.write('data: [SYSTEM] xrdp start attempted (may already be running).\n\n');
         }
 
-        // Step 2: Launch Pinggy reverse tunnel in background (exactly like the bat file)
+        // Step 2: Launch Pinggy reverse tunnel using EXACT bat file two-step approach
+        // Step 1 of 2: Write the tunnel command to a script file on the remote
+        res.write('data: [SYSTEM] Preparing Pinggy tunnel...\n\n');
+        await runCmd(
+            `gh cs ssh -c "${vps.codespaceName}" -- "echo 'pkill -f pinggy 2>/dev/null; rm -f /tmp/vps-pinggy.log; setsid ssh -p 443 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -R0:localhost:3389 tcp@a.pinggy.io >/tmp/vps-pinggy.log 2>&1 </dev/null & sleep 2' > /tmp/start_tunnel.sh"`,
+            { GH_TOKEN: `ghp_${vps.token}` }
+        );
+
+        // Step 2 of 2: Execute the script (exactly like the bat file)
         res.write('data: [SYSTEM] Launching Pinggy tunnel...\n\n');
-        const tunnelCmd = `gh cs ssh -c "${vps.codespaceName}" -- "pkill -f pinggy 2>/dev/null; rm -f /tmp/vps-pinggy.log; nohup ssh -p 443 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -R0:localhost:3389 tcp@a.pinggy.io > /tmp/vps-pinggy.log 2>&1 &"`;
+        await runCmd(
+            `gh cs ssh -c "${vps.codespaceName}" -- "bash /tmp/start_tunnel.sh"`,
+            { GH_TOKEN: `ghp_${vps.token}` }
+        );
 
-        const cmd = tunnelCmd;
-        res.write('data: [SYSTEM] Tunnel launched! Waiting for address...\n\n');
+        res.write('data: [SYSTEM] ✓ VPS is ACTIVE! Click [ GET RDP ] to get your connection address.\n\n');
+        res.end();
 
-        const child = spawn(cmd, {
-            shell: true,
-            env: { ...process.env, GH_TOKEN: `ghp_${vps.token}` }
-        });
-
-        child.stdout.on('data', (chunk) => {
-            const lines = chunk.toString().split('\n');
-            lines.forEach(line => {
-                if (line.trim()) {
-                    res.write(`data: ${line}\n\n`);
-                }
-            });
-        });
-
-        child.stderr.on('data', (chunk) => {
-            const lines = chunk.toString().split('\n');
-            lines.forEach(line => {
-                if (line.trim()) {
-                    res.write(`data: [ERROR] ${line}\n\n`);
-                }
-            });
-        });
-
-        child.on('close', (code) => {
-            res.write(`data: [SYSTEM] Process exited with code ${code}\n\n`);
-            res.end();
-        });
-
-        // Handle client disconnect
-        req.on('close', () => {
-            child.kill();
-        });
+        // Handle client disconnect (no spawned child anymore)
+        req.on('close', () => {});
 
     } catch (e) {
         res.write(`data: [SYSTEM] Stream error: ${e.message}\n\n`);
