@@ -68,6 +68,11 @@ app.get('/api/vps/status/:id', authenticate, async (req, res) => {
         const vps = data.find(v => v.id === req.params.id);
         if (!vps) return res.status(404).json({ error: 'VPS not found' });
 
+        // Skip if token is still a placeholder
+        if (!vps.token || vps.token === 'YOUR_TOKEN_WITHOUT_GHP_PREFIX') {
+            return res.json({ status: 'Unconfigured' });
+        }
+
         const stdout = await runCmd(`gh cs list --json name,state`, { GH_TOKEN: `ghp_${vps.token}` });
         const list = JSON.parse(stdout);
         const cs = list.find(c => c.name === vps.codespaceName);
@@ -120,51 +125,41 @@ app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
 
         // Initial connection message
         res.write('data: [SYSTEM] SSE Connection Established.\n\n');
-        res.write('data: [SYSTEM] Sending wake-up signal to Codespace...\n\n');
+        res.write('data: [SYSTEM] Starting Codespace (this may take 30-60 seconds)...\n\n');
         
-        // Wake up codespace first using GitHub API directly (avoids browser launch errors in container)
-        exec(`gh api -X POST /user/codespaces/${vps.codespaceName}/starts`, { 
-            env: { ...process.env, GH_TOKEN: `ghp_${vps.token}` } 
-        });
-
-        // Poll until the codespace is Available
-        let isReady = false;
-        let retryCount = 0;
-        
-        while (!isReady && retryCount < 20) { // max 100 seconds
-            try {
-                const stdout = await runCmd(`gh cs list --json name,state`, { GH_TOKEN: `ghp_${vps.token}` });
-                const list = JSON.parse(stdout);
-                const cs = list.find(c => c.name === vps.codespaceName);
-                
-                if (cs && cs.state === 'Available') {
-                    isReady = true;
-                    res.write(`data: [SYSTEM] Codespace is ONLINE! Initiating remote SSH build...\n\n`);
-                    break;
-                } else {
-                    res.write(`data: [SYSTEM] Waiting for Codespace to boot... (Current state: ${cs ? cs.state : 'Unknown'})\n\n`);
-                    // If it's suspended, send the start API call again just in case
-                    if (cs && (cs.state === 'Suspended' || cs.state === 'Shutdown')) {
-                        exec(`gh api -X POST /user/codespaces/${vps.codespaceName}/starts`, { 
-                            env: { ...process.env, GH_TOKEN: `ghp_${vps.token}` } 
-                        });
-                    }
-                    await new Promise(r => setTimeout(r, 5000));
-                    retryCount++;
-                }
-            } catch (err) {
-                res.write(`data: [ERROR] Failed to check status: ${err.message}\n\n`);
-                await new Promise(r => setTimeout(r, 5000));
-                retryCount++;
-            }
+        // Use "gh cs start" - exactly like the .bat file does it.
+        // This command blocks until the codespace is fully running and then exits.
+        try {
+            await runCmd(`gh cs start -c "${vps.codespaceName}"`, { GH_TOKEN: `ghp_${vps.token}` });
+            res.write('data: [SYSTEM] Codespace started successfully!\n\n');
+        } catch (startErr) {
+            // gh cs start returns an error if it's already running - that's fine, continue anyway
+            res.write('data: [SYSTEM] Codespace may already be running. Continuing...\n\n');
         }
 
-        if (!isReady) {
-            res.write(`data: [ERROR] Codespace took too long to start. Aborting.\n\n`);
+        // Test SSH connectivity first (like the bat file does)
+        res.write('data: [SYSTEM] Testing SSH connection...\n\n');
+        let sshOk = false;
+        for (let i = 0; i < 15; i++) {
+            try {
+                const test = await runCmd(`gh cs ssh -c "${vps.codespaceName}" -- "echo CONNECTION_OK"`, { GH_TOKEN: `ghp_${vps.token}` });
+                if (test.includes('CONNECTION_OK')) {
+                    sshOk = true;
+                    res.write('data: [SYSTEM] SSH connection established!\n\n');
+                    break;
+                }
+            } catch (e) {
+                // keep trying
+            }
+            await new Promise(r => setTimeout(r, 2000));
+        }
+
+        if (!sshOk) {
+            res.write('data: [ERROR] Could not establish SSH connection. Codespace may not be reachable.\n\n');
             return res.end();
         }
 
-        // The actual installation command
+        // The actual installation command - same approach as the bat file
         const cmd = `gh cs ssh -c "${vps.codespaceName}" -- "cd /tmp && wget -q https://raw.githubusercontent.com/sumane200/Alphardp/main/vps.sh && chmod +x vps.sh && ./vps.sh"`;
         res.write(`data: [SYSTEM] Executing remote build script...\n\n`);
 
