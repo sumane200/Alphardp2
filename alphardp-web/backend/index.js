@@ -96,10 +96,10 @@ app.post('/api/vps/action', authenticate, async (req, res) => {
         if (!vps) return res.status(404).json({ error: 'VPS not found' });
 
         if (action === 'start') {
-            await runCmd(`gh api -X POST /user/codespaces/${vps.codespaceName}/starts`, { GH_TOKEN: `ghp_${vps.token}` });
+            await runCmd(`gh api -X POST /user/codespaces/${vps.codespaceName}/start`, { GH_TOKEN: `ghp_${vps.token}` });
             res.json({ success: true, message: 'Starting VPS...' });
         } else if (action === 'stop') {
-            await runCmd(`gh api -X POST /user/codespaces/${vps.codespaceName}/stops`, { GH_TOKEN: `ghp_${vps.token}` });
+            await runCmd(`gh api -X POST /user/codespaces/${vps.codespaceName}/stop`, { GH_TOKEN: `ghp_${vps.token}` });
             res.json({ success: true, message: 'Stopping VPS...' });
         } else {
             res.status(400).json({ error: 'Invalid action' });
@@ -128,7 +128,7 @@ app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
         res.write('data: [SYSTEM] Sending wake-up signal to Codespace...\n\n');
 
         // Fire start API call (non-blocking)
-        exec(`gh api -X POST /user/codespaces/${vps.codespaceName}/starts`, {
+        exec(`gh api -X POST /user/codespaces/${vps.codespaceName}/start`, {
             env: { ...process.env, GH_TOKEN: `ghp_${vps.token}` }
         });
 
@@ -158,7 +158,7 @@ app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
                     }
                 } else if (state === 'Shutdown' || state === 'Suspended') {
                     // Re-send start signal if it didn't take
-                    exec(`gh api -X POST /user/codespaces/${vps.codespaceName}/starts`, {
+                    exec(`gh api -X POST /user/codespaces/${vps.codespaceName}/start`, {
                         env: { ...process.env, GH_TOKEN: `ghp_${vps.token}` }
                     });
                 }
