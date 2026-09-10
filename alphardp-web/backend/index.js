@@ -4,12 +4,18 @@ const { exec, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const dotenv = require('dotenv');
+const { createClient } = require('@supabase/supabase-js');
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 8080;
-const DB_PATH = path.join(__dirname, 'vps_database.json');
+
+// Initialize Supabase Client
+const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
 app.use(cors());
 app.use(express.json());
@@ -39,24 +45,37 @@ const runCmd = (cmd, envVars = {}) => {
     });
 };
 
-// Helper: Read DB
-const readDB = () => {
-    if (!fs.existsSync(DB_PATH)) return [];
-    return JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
+// Helper: Fetch all VPS
+const getVPSList = async () => {
+    const { data, error } = await supabase.from('vps_instances').select('*').order('name');
+    if (error) throw error;
+    return data;
+};
+
+// Helper: Fetch single VPS
+const getVPSById = async (id) => {
+    const { data, error } = await supabase.from('vps_instances').select('*').eq('id', id).single();
+    if (error) throw error;
+    return data;
 };
 
 // GET: List all VPS servers
-app.get('/api/vps/list', authenticate, (req, res) => {
+app.get('/api/vps/list', authenticate, async (req, res) => {
     try {
-        const data = readDB();
+        const data = await getVPSList();
         // Don't send the full token to frontend for security
         const safeData = data.map(vps => ({
             id: vps.id,
             name: vps.name,
-            codespaceName: vps.codespaceName
+            codespaceName: vps.codespace_name,
+            ram_gb: vps.ram_gb,
+            cpu_cores: vps.cpu_cores,
+            os: vps.os,
+            status: vps.status
         }));
         res.json(safeData);
     } catch (e) {
+        console.error(e);
         res.status(500).json({ error: 'Failed to read database' });
     }
 });
@@ -64,18 +83,21 @@ app.get('/api/vps/list', authenticate, (req, res) => {
 // GET: Check specific server status
 app.get('/api/vps/status/:id', authenticate, async (req, res) => {
     try {
-        const data = readDB();
-        const vps = data.find(v => v.id === req.params.id);
-        if (!vps) return res.status(404).json({ error: 'VPS not found' });
+        let vps;
+        try {
+            vps = await getVPSById(req.params.id);
+        } catch(e) {
+            return res.status(404).json({ error: 'VPS not found' });
+        }
 
         // Skip if token is still a placeholder
-        if (!vps.token || vps.token === 'YOUR_TOKEN_WITHOUT_GHP_PREFIX') {
+        if (!vps.github_token || vps.github_token === 'YOUR_TOKEN_WITHOUT_GHP_PREFIX') {
             return res.json({ status: 'Unconfigured' });
         }
 
-        const stdout = await runCmd(`gh cs list --json name,state`, { GH_TOKEN: `ghp_${vps.token}` });
+        const stdout = await runCmd(`gh cs list --json name,state`, { GH_TOKEN: `ghp_${vps.github_token}` });
         const list = JSON.parse(stdout);
-        const cs = list.find(c => c.name === vps.codespaceName);
+        const cs = list.find(c => c.name === vps.codespace_name);
         
         if (cs) {
             res.json({ status: cs.state });
@@ -91,15 +113,18 @@ app.get('/api/vps/status/:id', authenticate, async (req, res) => {
 app.post('/api/vps/action', authenticate, async (req, res) => {
     const { id, action } = req.body;
     try {
-        const data = readDB();
-        const vps = data.find(v => v.id === id);
-        if (!vps) return res.status(404).json({ error: 'VPS not found' });
+        let vps;
+        try {
+            vps = await getVPSById(id);
+        } catch(e) {
+            return res.status(404).json({ error: 'VPS not found' });
+        }
 
         if (action === 'start') {
-            await runCmd(`gh api -X POST /user/codespaces/${vps.codespaceName}/start`, { GH_TOKEN: `ghp_${vps.token}` });
+            await runCmd(`gh api -X POST /user/codespaces/${vps.codespace_name}/start`, { GH_TOKEN: `ghp_${vps.github_token}` });
             res.json({ success: true, message: 'Starting VPS...' });
         } else if (action === 'stop') {
-            await runCmd(`gh api -X POST /user/codespaces/${vps.codespaceName}/stop`, { GH_TOKEN: `ghp_${vps.token}` });
+            await runCmd(`gh api -X POST /user/codespaces/${vps.codespace_name}/stop`, { GH_TOKEN: `ghp_${vps.github_token}` });
             res.json({ success: true, message: 'Stopping VPS...' });
         } else {
             res.status(400).json({ error: 'Invalid action' });
@@ -112,9 +137,10 @@ app.post('/api/vps/action', authenticate, async (req, res) => {
 // GET: Stream VPS Setup Logs (SSE)
 app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
     try {
-        const data = readDB();
-        const vps = data.find(v => v.id === req.params.id);
-        if (!vps) {
+        let vps;
+        try {
+            vps = await getVPSById(req.params.id);
+        } catch(e) {
             return res.status(404).json({ error: 'VPS not found' });
         }
 
@@ -128,8 +154,8 @@ app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
         res.write('data: [SYSTEM] Sending wake-up signal to Codespace...\n\n');
 
         // Fire start API call (non-blocking)
-        exec(`gh api -X POST /user/codespaces/${vps.codespaceName}/start`, {
-            env: { ...process.env, GH_TOKEN: `ghp_${vps.token}` }
+        exec(`gh api -X POST /user/codespaces/${vps.codespace_name}/start`, {
+            env: { ...process.env, GH_TOKEN: `ghp_${vps.github_token}` }
         });
 
         // Poll via gh cs list until state is Available (max 24 x 5s = 120s)
@@ -138,16 +164,16 @@ app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
         for (let i = 0; i < 24; i++) {
             await new Promise(r => setTimeout(r, 5000));
             try {
-                const listOut = await runCmd(`gh cs list --json name,state`, { GH_TOKEN: `ghp_${vps.token}` });
+                const listOut = await runCmd(`gh cs list --json name,state`, { GH_TOKEN: `ghp_${vps.github_token}` });
                 const list = JSON.parse(listOut);
-                const cs = list.find(c => c.name === vps.codespaceName);
+                const cs = list.find(c => c.name === vps.codespace_name);
                 const state = cs ? cs.state : 'Unknown';
                 res.write(`data: [SYSTEM] Codespace state: ${state}\n\n`);
 
                 if (state === 'Available') {
                     // Quick SSH test
                     try {
-                        const test = await runCmd(`gh cs ssh -c "${vps.codespaceName}" -- "echo CONNECTION_OK"`, { GH_TOKEN: `ghp_${vps.token}` });
+                        const test = await runCmd(`gh cs ssh -c "${vps.codespace_name}" -- "echo CONNECTION_OK"`, { GH_TOKEN: `ghp_${vps.github_token}` });
                         if (test.includes('CONNECTION_OK')) {
                             sshOk = true;
                             res.write('data: [SYSTEM] SSH connection established! Starting build...\n\n');
@@ -158,8 +184,8 @@ app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
                     }
                 } else if (state === 'Shutdown' || state === 'Suspended') {
                     // Re-send start signal if it didn't take
-                    exec(`gh api -X POST /user/codespaces/${vps.codespaceName}/start`, {
-                        env: { ...process.env, GH_TOKEN: `ghp_${vps.token}` }
+                    exec(`gh api -X POST /user/codespaces/${vps.codespace_name}/start`, {
+                        env: { ...process.env, GH_TOKEN: `ghp_${vps.github_token}` }
                     });
                 }
             } catch (pollErr) {
@@ -175,7 +201,7 @@ app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
         // Step 1: Restart xrdp (exactly like the bat file)
         res.write('data: [SYSTEM] Starting xrdp service...\n\n');
         try {
-            await runCmd(`gh cs ssh -c "${vps.codespaceName}" -- "sudo service xrdp restart > /dev/null 2>&1; sleep 2; sudo service xrdp start > /dev/null 2>&1 || true"`, { GH_TOKEN: `ghp_${vps.token}` });
+            await runCmd(`gh cs ssh -c "${vps.codespace_name}" -- "sudo service xrdp restart > /dev/null 2>&1; sleep 2; sudo service xrdp start > /dev/null 2>&1 || true"`, { GH_TOKEN: `ghp_${vps.github_token}` });
             res.write('data: [SYSTEM] xrdp is running!\n\n');
         } catch (e) {
             res.write('data: [SYSTEM] xrdp start attempted (may already be running).\n\n');
@@ -185,15 +211,15 @@ app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
         // Step 1 of 2: Write the tunnel command to a script file on the remote
         res.write('data: [SYSTEM] Preparing Pinggy tunnel...\n\n');
         await runCmd(
-            `gh cs ssh -c "${vps.codespaceName}" -- "echo 'pkill -f pinggy 2>/dev/null; rm -f /tmp/vps-pinggy.log; setsid ssh -p 443 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -R0:localhost:3389 tcp@a.pinggy.io >/tmp/vps-pinggy.log 2>&1 </dev/null & sleep 2' > /tmp/start_tunnel.sh"`,
-            { GH_TOKEN: `ghp_${vps.token}` }
+            `gh cs ssh -c "${vps.codespace_name}" -- "echo 'pkill -f pinggy 2>/dev/null; rm -f /tmp/vps-pinggy.log; setsid ssh -p 443 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -R0:localhost:3389 tcp@a.pinggy.io >/tmp/vps-pinggy.log 2>&1 </dev/null & sleep 2' > /tmp/start_tunnel.sh"`,
+            { GH_TOKEN: `ghp_${vps.github_token}` }
         );
 
         // Step 2 of 2: Execute the script (exactly like the bat file)
         res.write('data: [SYSTEM] Launching Pinggy tunnel...\n\n');
         await runCmd(
-            `gh cs ssh -c "${vps.codespaceName}" -- "bash /tmp/start_tunnel.sh"`,
-            { GH_TOKEN: `ghp_${vps.token}` }
+            `gh cs ssh -c "${vps.codespace_name}" -- "bash /tmp/start_tunnel.sh"`,
+            { GH_TOKEN: `ghp_${vps.github_token}` }
         );
 
         res.write('data: [SYSTEM] ✓ VPS is ACTIVE! Click [ GET RDP ] to get your connection address.\n\n');
@@ -211,13 +237,16 @@ app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
 // GET: Get Pinggy Tunnel URL
 app.get('/api/vps/tunnel/:id', authenticate, async (req, res) => {
     try {
-        const data = readDB();
-        const vps = data.find(v => v.id === req.params.id);
-        if (!vps) return res.status(404).json({ error: 'VPS not found' });
+        let vps;
+        try {
+            vps = await getVPSById(req.params.id);
+        } catch(e) {
+            return res.status(404).json({ error: 'VPS not found' });
+        }
 
         // We use gh cs ssh to run a command remotely that fetches the log
-        const cmd = `gh cs ssh -c "${vps.codespaceName}" -- "grep -m 1 -o 'tcp://[^ ]*' /tmp/vps-pinggy.log 2>/dev/null"`;
-        const stdout = await runCmd(cmd, { GH_TOKEN: `ghp_${vps.token}` });
+        const cmd = `gh cs ssh -c "${vps.codespace_name}" -- "grep -m 1 -o 'tcp://[^ ]*' /tmp/vps-pinggy.log 2>/dev/null"`;
+        const stdout = await runCmd(cmd, { GH_TOKEN: `ghp_${vps.github_token}` });
         
         const url = stdout.trim();
         if (url) {
