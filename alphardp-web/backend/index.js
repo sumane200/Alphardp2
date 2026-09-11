@@ -20,16 +20,25 @@ const supabase = createClient(
 app.use(cors());
 app.use(express.json());
 
-const authenticate = (req, res, next) => {
-    const apiKey = req.headers['x-api-key'] || req.query.api_key;
-    if (!process.env.API_SECRET) {
-        return next(); // Skip if no secret configured
+const authenticate = async (req, res, next) => {
+    let token = req.headers['authorization']?.replace('Bearer ', '');
+    // Fallback for SSE connections which pass token in query
+    if (!token && req.query.api_key) {
+        token = req.query.api_key;
     }
-    if (apiKey === process.env.API_SECRET) {
-        next();
-    } else {
-        res.status(401).json({ error: 'Unauthorized. Invalid API Key.' });
+
+    if (!token) {
+        return res.status(401).json({ error: 'Unauthorized. No token provided.' });
     }
+
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    
+    if (error || !user) {
+        return res.status(401).json({ error: 'Unauthorized. Invalid token.' });
+    }
+
+    req.user = user;
+    next();
 };
 
 // Helper: Run command
@@ -45,14 +54,14 @@ const runCmd = (cmd, envVars = {}) => {
     });
 };
 
-// Helper: Fetch all VPS
+// Helper: Fetch all VPS for any authenticated user
 const getVPSList = async () => {
     const { data, error } = await supabase.from('vps_instances').select('*').order('name');
     if (error) throw error;
     return data;
 };
 
-// Helper: Fetch single VPS
+// Helper: Fetch single VPS for any authenticated user
 const getVPSById = async (id) => {
     const { data, error } = await supabase.from('vps_instances').select('*').eq('id', id).single();
     if (error) throw error;
@@ -71,7 +80,9 @@ app.get('/api/vps/list', authenticate, async (req, res) => {
             ram_gb: vps.ram_gb,
             cpu_cores: vps.cpu_cores,
             os: vps.os,
-            status: vps.status
+            status: vps.status,
+            rdp_username: vps.rdp_username,
+            rdp_password: vps.rdp_password
         }));
         res.json(safeData);
     } catch (e) {
