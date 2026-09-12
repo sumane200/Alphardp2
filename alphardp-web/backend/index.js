@@ -73,17 +73,23 @@ app.get('/api/vps/list', authenticate, async (req, res) => {
     try {
         const data = await getVPSList();
         // Don't send the full token to frontend for security
-        const safeData = data.map(vps => ({
-            id: vps.id,
-            name: vps.name,
-            codespaceName: vps.codespace_name,
-            ram_gb: vps.ram_gb,
-            cpu_cores: vps.cpu_cores,
-            os: vps.os,
-            status: vps.status,
-            rdp_username: vps.rdp_username,
-            rdp_password: vps.rdp_password
-        }));
+        const safeData = data.map(vps => {
+            const isLockedByOther = vps.user_id && vps.user_id !== req.user.id;
+            return {
+                id: vps.id,
+                name: vps.name,
+                codespaceName: vps.codespace_name,
+                ram_gb: vps.ram_gb,
+                cpu_cores: vps.cpu_cores,
+                os: vps.os,
+                status: vps.status,
+                rdp_username: vps.rdp_username,
+                rdp_password: isLockedByOther ? '*** (Locked by another user)' : vps.rdp_password,
+                locked_by_other: isLockedByOther,
+                locked_by_me: vps.user_id === req.user.id,
+                locked_at: vps.locked_at
+            };
+        });
         res.json(safeData);
     } catch (e) {
         console.error(e);
@@ -111,6 +117,21 @@ app.get('/api/vps/status/:id', authenticate, async (req, res) => {
         const cs = list.find(c => c.name === vps.codespace_name);
         
         if (cs) {
+            // Auto-unlock logic if server is genuinely suspended/shutdown
+            if ((cs.state === 'Suspended' || cs.state === 'Shutdown') && vps.user_id) {
+                // Check if grace period is over (59 minutes)
+                if (vps.locked_at) {
+                    const lockTime = new Date(vps.locked_at).getTime();
+                    const now = Date.now();
+                    const diffMins = (now - lockTime) / 60000;
+                    if (diffMins >= 59) {
+                        await supabase.from('vps_instances').update({ user_id: null, locked_at: null }).eq('id', vps.id);
+                    }
+                } else {
+                    // No locked_at but suspended? Just release.
+                    await supabase.from('vps_instances').update({ user_id: null, locked_at: null }).eq('id', vps.id);
+                }
+            }
             res.json({ status: cs.state });
         } else {
             res.json({ status: 'Unknown' });
@@ -132,10 +153,19 @@ app.post('/api/vps/action', authenticate, async (req, res) => {
         }
 
         if (action === 'start') {
+            if (vps.user_id && vps.user_id !== req.user.id) {
+                return res.status(403).json({ error: 'Server is locked by another user' });
+            }
             await runCmd(`gh api -X POST /user/codespaces/${vps.codespace_name}/start`, { GH_TOKEN: `ghp_${vps.github_token}` });
+            await supabase.from('vps_instances').update({ user_id: req.user.id, locked_at: new Date().toISOString() }).eq('id', vps.id);
             res.json({ success: true, message: 'Starting VPS...' });
         } else if (action === 'stop') {
+            if (vps.user_id && vps.user_id !== req.user.id) {
+                return res.status(403).json({ error: 'Server is locked by another user' });
+            }
             await runCmd(`gh api -X POST /user/codespaces/${vps.codespace_name}/stop`, { GH_TOKEN: `ghp_${vps.github_token}` });
+            // Release lock immediately on manual stop
+            await supabase.from('vps_instances').update({ user_id: null, locked_at: null }).eq('id', vps.id);
             res.json({ success: true, message: 'Stopping VPS...' });
         } else {
             res.status(400).json({ error: 'Invalid action' });
@@ -159,6 +189,18 @@ app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
         res.setHeader('Content-Type', 'text/event-stream');
         res.setHeader('Cache-Control', 'no-cache');
         res.setHeader('Connection', 'keep-alive');
+
+        // Check if locked by someone else
+        if (vps.user_id && vps.user_id !== req.user.id) {
+            res.write('data: [ERROR] Server is currently in use by someone else. Please try another server.\n\n');
+            return res.end();
+        }
+
+        // Lock the server
+        await supabase.from('vps_instances').update({ 
+            user_id: req.user.id, 
+            locked_at: new Date().toISOString() 
+        }).eq('id', vps.id);
 
         // Initial connection message
         res.write('data: [SYSTEM] SSE Connection Established.\n\n');
@@ -255,6 +297,10 @@ app.get('/api/vps/tunnel/:id', authenticate, async (req, res) => {
             return res.status(404).json({ error: 'VPS not found' });
         }
 
+        if (vps.user_id && vps.user_id !== req.user.id) {
+            return res.status(403).json({ error: 'Access Denied: Server is locked by another user' });
+        }
+
         // We use gh cs ssh to run a command remotely that fetches the log
         const cmd = `gh cs ssh -c "${vps.codespace_name}" -- "grep -m 1 -o 'tcp://[^ ]*' /tmp/vps-pinggy.log 2>/dev/null"`;
         const stdout = await runCmd(cmd, { GH_TOKEN: `ghp_${vps.github_token}` });
@@ -272,4 +318,36 @@ app.get('/api/vps/tunnel/:id', authenticate, async (req, res) => {
 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
+    
+    // Start Heartbeat monitor
+    setInterval(async () => {
+        try {
+            const { data: servers, error } = await supabase.from('vps_instances').select('*').not('locked_at', 'is', null);
+            if (error) return;
+
+            const now = Date.now();
+            for (const vps of servers) {
+                const lockTime = new Date(vps.locked_at).getTime();
+                const diffMins = (now - lockTime) / 60000;
+
+                // Rule B: Fully release lock after 59 minutes
+                if (diffMins >= 59) {
+                    await supabase.from('vps_instances').update({ user_id: null, locked_at: null }).eq('id', vps.id);
+                    console.log(`[Heartbeat] Released lock for VPS ${vps.id} (59 min grace period expired)`);
+                } 
+                // Rule A: Force stop server after 57 minutes (to prevent Pinggy drop), keep lock for grace period
+                else if (diffMins >= 57 && diffMins < 58) {
+                    // We only want to trigger this once, so we check if it's right around 57 minutes
+                    try {
+                        await runCmd(`gh api -X POST /user/codespaces/${vps.codespace_name}/stop`, { GH_TOKEN: `ghp_${vps.github_token}` });
+                        console.log(`[Heartbeat] Auto-stopped VPS ${vps.id} (57 min limit reached)`);
+                    } catch (e) {
+                        // ignore errors, maybe it's already stopped
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('[Heartbeat] Error checking locks:', e);
+        }
+    }, 60000); // Check every 60 seconds
 });
