@@ -312,7 +312,7 @@ app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
         // Cleanup previous session data
         res.write('data: [SYSTEM] Cleaning up previous session data (Downloads, Browser History)...\n\n');
         try {
-            const cleanupCmd = `rm -rf ~/Downloads/* ~/.cache/google-chrome ~/.config/google-chrome/Default/History ~/.config/google-chrome/Default/Sessions ~/.cache/mozilla ~/.mozilla/firefox/*.default-release/places.sqlite ~/.local/share/Trash/files/* /tmp/firefox* /tmp/chrome*`;
+            const cleanupCmd = `rm -rf ~/Downloads/* ~/Desktop/* ~/Documents/* ~/Pictures/* ~/Videos/* ~/Music/* ~/Public/* ~/Templates/* ~/snap/* ~/.var/app/* ~/.config/google-chrome ~/.config/chromium ~/.config/BraveSoftware ~/.config/microsoft-edge ~/.config/opera ~/.config/vivaldi ~/.mozilla ~/.pki ~/.config/Code ~/.config/Cursor ~/.vscode ~/.cursor ~/.config/JetBrains ~/.config/Postman ~/.config/Insomnia ~/.config/dbeaver ~/.android ~/.java ~/.config/discord ~/.config/Slack ~/.config/TelegramDesktop ~/.config/Signal ~/.config/Skype ~/.config/transmission ~/.config/qBittorrent ~/.config/deluge ~/.config/vlc ~/.config/obs-studio ~/.config/spotify ~/.config/megasync ~/.bash_history ~/.python_history ~/.mysql_history ~/.psql_history ~/.node_repl_history ~/.wget-hsts ~/.viminfo ~/.lesshst ~/.gitconfig ~/.aws ~/.kube ~/.docker/config.json ~/.cache/* ~/.local/share/Trash/* ~/.thumbnails/* ~/.nv /tmp/firefox* /tmp/chrome* /tmp/chromium* /tmp/Brave* /tmp/discord*`;
             await runCmd(`gh cs ssh -c "${vps.codespace_name}" -- "${cleanupCmd}"`, { GH_TOKEN: `ghp_${vps.github_token}` });
             res.write('data: [SYSTEM] Cleanup completed.\n\n');
         } catch (e) {
