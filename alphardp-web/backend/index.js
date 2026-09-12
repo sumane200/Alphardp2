@@ -334,16 +334,40 @@ app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
             res.write('data: [SYSTEM] xrdp start attempted (may already be running).\n\n');
         }
 
-        // Step 2: Launch Pinggy reverse tunnel using EXACT bat file two-step approach
-        // Step 1 of 2: Write the tunnel command to a script file on the remote
-        res.write('data: [SYSTEM] Preparing Pinggy tunnel...\n\n');
+        // Step 2: Launch Pinggy reverse tunnels (TCP for RDP, HTTP for noVNC)
+        res.write('data: [SYSTEM] Preparing Web Desktop & Pinggy tunnels...\n\n');
+        
+        const bashScript = `
+if ! command -v websockify &> /dev/null; then
+    sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y novnc websockify tigervnc-standalone-server
+fi
+
+mkdir -p ~/.vnc
+echo "${vps.rdp_password}" | vncpasswd -f > ~/.vnc/passwd
+chmod 600 ~/.vnc/passwd
+cat /etc/xrdp/startwm.sh > ~/.vnc/xstartup 2>/dev/null || echo -e "#!/bin/bash\nstartxfce4 &" > ~/.vnc/xstartup
+chmod +x ~/.vnc/xstartup
+
+vncserver -kill :1 2>/dev/null || true
+pkill -f websockify 2>/dev/null || true
+pkill -f pinggy 2>/dev/null || true
+rm -f /tmp/vps-pinggy.log /tmp/vps-pinggy-web.log
+
+vncserver :1 -geometry 1280x720 -depth 24 -localhost no
+websockify --web /usr/share/novnc/ 6080 localhost:5901 &
+
+setsid ssh -p 443 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -R0:localhost:3389 tcp@a.pinggy.io >/tmp/vps-pinggy.log 2>&1 </dev/null &
+setsid ssh -p 443 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -R0:localhost:6080 a.pinggy.io >/tmp/vps-pinggy-web.log 2>&1 </dev/null &
+sleep 3
+`;
+
         await runCmd(
-            `gh cs ssh -c "${vps.codespace_name}" -- "echo 'pkill -f pinggy 2>/dev/null; rm -f /tmp/vps-pinggy.log; setsid ssh -p 443 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -R0:localhost:3389 tcp@a.pinggy.io >/tmp/vps-pinggy.log 2>&1 </dev/null & sleep 2' > /tmp/start_tunnel.sh"`,
+            `gh cs ssh -c "${vps.codespace_name}" -- "cat << 'EOF' > /tmp/start_tunnel.sh\n${bashScript}\nEOF"`,
             { GH_TOKEN: `ghp_${vps.github_token}` }
         );
 
-        // Step 2 of 2: Execute the script (exactly like the bat file)
-        res.write('data: [SYSTEM] Launching Pinggy tunnel...\n\n');
+        // Step 3: Execute the script
+        res.write('data: [SYSTEM] Launching Dual Pinggy tunnels...\n\n');
         await runCmd(
             `gh cs ssh -c "${vps.codespace_name}" -- "bash /tmp/start_tunnel.sh"`,
             { GH_TOKEN: `ghp_${vps.github_token}` }
@@ -375,13 +399,19 @@ app.get('/api/vps/tunnel/:id', authenticate, async (req, res) => {
             return res.status(403).json({ error: 'Access Denied: Server is locked by another user' });
         }
 
-        // We use gh cs ssh to run a command remotely that fetches the log
-        const cmd = `gh cs ssh -c "${vps.codespace_name}" -- "grep -m 1 -o 'tcp://[^ ]*' /tmp/vps-pinggy.log 2>/dev/null"`;
+        // We use gh cs ssh to run a command remotely that fetches the logs
+        const cmd = `gh cs ssh -c "${vps.codespace_name}" -- "grep -m 1 -o 'tcp://[^ ]*' /tmp/vps-pinggy.log 2>/dev/null; echo '---'; grep -m 1 -E -o 'https?://[^ ]*pinggy[^ ]*' /tmp/vps-pinggy-web.log 2>/dev/null"`;
         const stdout = await runCmd(cmd, { GH_TOKEN: `ghp_${vps.github_token}` });
         
-        const url = stdout.trim();
-        if (url) {
-            res.json({ url: url.replace('tcp://', '') });
+        const parts = stdout.split('---');
+        const rdpUrlRaw = parts[0] ? parts[0].trim() : '';
+        const webUrlRaw = parts[1] ? parts[1].trim() : '';
+        
+        if (rdpUrlRaw) {
+            res.json({ 
+                url: rdpUrlRaw.replace('tcp://', ''),
+                webUrl: webUrlRaw ? webUrlRaw + '/vnc.html?autoconnect=true&password=' + encodeURIComponent(vps.rdp_password) : null
+            });
         } else {
             res.json({ error: 'Tunnel not ready yet. Please wait a moment.' });
         }
