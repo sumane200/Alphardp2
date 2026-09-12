@@ -25,7 +25,16 @@ app.use(express.json());
 const novncProxy = createProxyMiddleware({
     target: 'https://pinggy.link', // Dummy target required by HPM
     router: function(req) {
-        return `https://${req.query.host}`;
+        // req.query is undefined during native websocket upgrade events
+        let host = req.query && req.query.host;
+        if (!host && req.url) {
+            try {
+                // req.url is something like /novnc-proxy?host=xyz...
+                const params = new URLSearchParams(req.url.split('?')[1]);
+                host = params.get('host');
+            } catch(e) {}
+        }
+        return `https://${host}`;
     },
     changeOrigin: true,
     ws: true,
