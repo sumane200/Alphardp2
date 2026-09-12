@@ -254,7 +254,7 @@ app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
 
         // Initial connection message
         res.write('data: [SYSTEM] SSE Connection Established.\n\n');
-        res.write('data: [SYSTEM] Sending wake-up signal to Codespace...\n\n');
+        res.write('data: [SYSTEM] Sending wake-up signal to Server Instance...\n\n');
 
         // Fire start API call (non-blocking)
         exec(`gh api -X POST /user/codespaces/${vps.codespace_name}/start`, {
@@ -262,7 +262,7 @@ app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
         });
 
         // Poll via gh cs list until state is Available (max 24 x 5s = 120s)
-        res.write('data: [SYSTEM] Waiting for Codespace to boot...\n\n');
+        res.write('data: [SYSTEM] Waiting for Server Instance to boot...\n\n');
         let sshOk = false;
         for (let i = 0; i < 24; i++) {
             await new Promise(r => setTimeout(r, 5000));
@@ -271,7 +271,7 @@ app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
                 const list = JSON.parse(listOut);
                 const cs = list.find(c => c.name === vps.codespace_name);
                 const state = cs ? cs.state : 'Unknown';
-                res.write(`data: [SYSTEM] Codespace state: ${state}\n\n`);
+                res.write(`data: [SYSTEM] Server state: ${state}\n\n`);
 
                 if (state === 'Available') {
                     // Quick SSH test
