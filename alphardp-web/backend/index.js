@@ -412,7 +412,7 @@ app.get('/api/vps/tunnel/:id', authenticate, async (req, res) => {
         if (rdpUrlRaw) {
             res.json({ 
                 url: rdpUrlRaw.replace('tcp://', ''),
-                webUrl: webUrlRaw ? webUrlRaw + '/vnc.html?autoconnect=true&password=' + encodeURIComponent(vps.rdp_password) : null
+                webUrl: webUrlRaw || null
             });
         } else {
             res.json({ error: 'Tunnel not ready yet. Please wait a moment.' });
