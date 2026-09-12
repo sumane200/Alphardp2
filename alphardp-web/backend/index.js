@@ -301,6 +301,16 @@ app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
             return res.end();
         }
 
+        // Cleanup previous session data
+        res.write('data: [SYSTEM] Cleaning up previous session data (Downloads, Browser History)...\n\n');
+        try {
+            const cleanupCmd = `rm -rf ~/Downloads/* ~/.cache/google-chrome ~/.config/google-chrome/Default/History ~/.config/google-chrome/Default/Sessions ~/.cache/mozilla ~/.mozilla/firefox/*.default-release/places.sqlite ~/.local/share/Trash/files/* /tmp/firefox* /tmp/chrome*`;
+            await runCmd(`gh cs ssh -c "${vps.codespace_name}" -- "${cleanupCmd}"`, { GH_TOKEN: `ghp_${vps.github_token}` });
+            res.write('data: [SYSTEM] Cleanup completed.\n\n');
+        } catch (e) {
+            res.write('data: [SYSTEM] Cleanup completed (or no previous data found).\n\n');
+        }
+
         // Step 1: Restart xrdp (exactly like the bat file)
         res.write('data: [SYSTEM] Starting xrdp service...\n\n');
         try {
