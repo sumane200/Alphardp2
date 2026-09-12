@@ -41,9 +41,13 @@ const authenticate = async (req, res, next) => {
     next();
 };
 
-const adminOnly = (req, res, next) => {
+const isAdmin = (user) => {
     const adminEmails = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase());
-    if (!req.user.email || !adminEmails.includes(req.user.email.toLowerCase())) {
+    return user && user.email && adminEmails.includes(user.email.toLowerCase());
+};
+
+const adminOnly = (req, res, next) => {
+    if (!isAdmin(req.user)) {
         return res.status(403).json({ error: 'Forbidden. Admin access required.' });
     }
     next();
@@ -80,6 +84,11 @@ const getVPSById = async (id) => {
 app.get('/api/vps/list', authenticate, async (req, res) => {
     try {
         let data = await getVPSList();
+        
+        // Filter out hidden servers for non-admins
+        if (!isAdmin(req.user)) {
+            data = data.filter(vps => !vps.name.startsWith('[HIDDEN] '));
+        }
         
         // Free tier restriction
         if (req.user.is_anonymous) {
@@ -390,6 +399,33 @@ app.put('/api/admin/vps/:id/status', authenticate, adminOnly, async (req, res) =
         res.json(data);
     } catch (e) {
         res.status(500).json({ error: 'Failed to update VPS status' });
+    }
+});
+
+// PUT: Update VPS Visibility (Hide/Unhide)
+app.put('/api/admin/vps/:id/visibility', authenticate, adminOnly, async (req, res) => {
+    try {
+        const vps = await getVPSById(req.params.id);
+        const isHidden = vps.name.startsWith('[HIDDEN] ');
+        let newName = vps.name;
+
+        if (isHidden) {
+            // Unhide
+            newName = newName.replace('[HIDDEN] ', '');
+        } else {
+            // Hide
+            newName = '[HIDDEN] ' + newName;
+        }
+
+        const { data, error } = await supabase.from('vps_instances')
+            .update({ name: newName })
+            .eq('id', req.params.id)
+            .select().single();
+
+        if (error) throw error;
+        res.json(data);
+    } catch (e) {
+        res.status(500).json({ error: 'Failed to update VPS visibility' });
     }
 });
 
