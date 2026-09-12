@@ -402,7 +402,7 @@ app.get('/api/vps/tunnel/:id', authenticate, async (req, res) => {
         }
 
         // We use gh cs ssh to run a command remotely that fetches the logs
-        const cmd = `gh cs ssh -c "${vps.codespace_name}" -- "grep -m 1 -o 'tcp://[^ ]*' /tmp/vps-pinggy.log 2>/dev/null; echo '---'; grep -m 1 -E -o 'https?://[^ ]*pinggy[^ ]*' /tmp/vps-pinggy-web.log 2>/dev/null"`;
+        const cmd = `gh cs ssh -c "${vps.codespace_name}" -- "grep -m 1 -o 'tcp://[^ ]*' /tmp/vps-pinggy.log 2>/dev/null; echo '---'; grep -E -o 'https?://[^ ]*pinggy[^ ]*' /tmp/vps-pinggy-web.log 2>/dev/null | grep -v 'dashboard' | head -n 1"`;
         const stdout = await runCmd(cmd, { GH_TOKEN: `ghp_${vps.github_token}` });
         
         const parts = stdout.split('---');
