@@ -218,6 +218,28 @@ app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
         res.setHeader('Cache-Control', 'no-cache');
         res.setHeader('Connection', 'keep-alive');
 
+        const cfToken = req.query.cf_token;
+        if (!cfToken) {
+            res.write('data: [ERROR] Human verification missing.\n\n');
+            return res.end();
+        }
+
+        // Verify Turnstile Token
+        const verifyRes = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                secret: process.env.TURNSTILE_SECRET_KEY,
+                response: cfToken
+            })
+        });
+        
+        const outcome = await verifyRes.json();
+        if (!outcome.success) {
+            res.write('data: [ERROR] Human verification failed.\n\n');
+            return res.end();
+        }
+
         // Check if locked by someone else
         if (vps.user_id && vps.user_id !== req.user.id) {
             res.write('data: [ERROR] Server is currently in use by someone else. Please try another server.\n\n');
