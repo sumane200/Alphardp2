@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const { createProxyMiddleware } = require('http-proxy-middleware');
 const { exec, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -19,6 +20,25 @@ const supabase = createClient(
 
 app.use(cors());
 app.use(express.json());
+
+// Proxy for noVNC WebSocket to bypass Pinggy interstitial
+app.use('/novnc-proxy', createProxyMiddleware({
+    router: function(req) {
+        return `https://${req.query.host}`;
+    },
+    changeOrigin: true,
+    ws: true,
+    pathRewrite: {
+        '^/novnc-proxy': '/websockify' // rewrite path to match what pinggy/novnc expects
+    },
+    onProxyReqWs: (proxyReq, req, socket, options, head) => {
+        // Inject the exact header pinggy requires to bypass the warning screen
+        proxyReq.setHeader('x-pinggy-no-screen', '1');
+    },
+    onProxyReq: (proxyReq, req, res) => {
+        proxyReq.setHeader('x-pinggy-no-screen', '1');
+    }
+}));
 
 const authenticate = async (req, res, next) => {
     let token = req.headers['authorization']?.replace('Bearer ', '');
