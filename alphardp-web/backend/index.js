@@ -195,6 +195,14 @@ app.post('/api/vps/action', authenticate, async (req, res) => {
             // Release lock immediately on manual stop
             await supabase.from('vps_instances').update({ user_id: null, locked_at: null }).eq('id', vps.id);
             res.json({ success: true, message: 'Stopping VPS...' });
+        } else if (action === 'force_stop') {
+            const adminEmails = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase());
+            if (!adminEmails.includes(req.user.email.toLowerCase())) {
+                return res.status(403).json({ error: 'Admin privileges required' });
+            }
+            await runCmd(`gh api -X POST /user/codespaces/${vps.codespace_name}/stop`, { GH_TOKEN: `ghp_${vps.github_token}` });
+            await supabase.from('vps_instances').update({ user_id: null, locked_at: null }).eq('id', vps.id);
+            res.json({ success: true, message: 'Force stopping VPS...' });
         } else {
             res.status(400).json({ error: 'Invalid action' });
         }
@@ -458,6 +466,29 @@ app.put('/api/admin/vps/:id/visibility', authenticate, adminOnly, async (req, re
         res.json(data);
     } catch (e) {
         res.status(500).json({ error: 'Failed to update VPS visibility' });
+    }
+});
+
+// GET: Fetch Codespace usage via GitHub API
+app.get('/api/admin/vps/:id/usage', authenticate, adminOnly, async (req, res) => {
+    try {
+        const vps = await getVPSById(req.params.id);
+        
+        // 1. Get the username associated with this token
+        const userOut = await runCmd(`gh api /user`, { GH_TOKEN: `ghp_${vps.github_token}` });
+        const user = JSON.parse(userOut);
+        const username = user.login;
+
+        // 2. Get the billing info for this user
+        const billingOut = await runCmd(`gh api /users/${username}/settings/billing/codespaces`, { GH_TOKEN: `ghp_${vps.github_token}` });
+        const billing = JSON.parse(billingOut);
+
+        res.json({
+            total_billable_time_in_minutes: billing.total_billable_time_in_minutes || 0,
+            included_minutes: billing.included_minutes || 7200,
+        });
+    } catch (e) {
+        res.status(500).json({ error: 'Failed to fetch usage. Ensure token has "user" scope.' });
     }
 });
 
