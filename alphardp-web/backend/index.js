@@ -41,6 +41,14 @@ const authenticate = async (req, res, next) => {
     next();
 };
 
+const adminOnly = (req, res, next) => {
+    const adminEmails = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase());
+    if (!req.user.email || !adminEmails.includes(req.user.email.toLowerCase())) {
+        return res.status(403).json({ error: 'Forbidden. Admin access required.' });
+    }
+    next();
+};
+
 // Helper: Run command
 const runCmd = (cmd, envVars = {}) => {
     return new Promise((resolve, reject) => {
@@ -111,6 +119,11 @@ app.get('/api/vps/status/:id', authenticate, async (req, res) => {
             vps = await getVPSById(req.params.id);
         } catch(e) {
             return res.status(404).json({ error: 'VPS not found' });
+        }
+
+        // Admin override for Maintenance
+        if (vps.status === 'Maintenance') {
+            return res.json({ status: 'Maintenance' });
         }
 
         // Skip if token is still a placeholder
@@ -319,6 +332,64 @@ app.get('/api/vps/tunnel/:id', authenticate, async (req, res) => {
         }
     } catch (e) {
         res.status(500).json({ error: 'Failed to fetch tunnel URL' });
+    }
+});
+
+
+
+// ==========================================
+// ADMIN ROUTES
+// ==========================================
+
+// GET: All VPSs (including tokens for admin management)
+app.get('/api/admin/vps/list', authenticate, adminOnly, async (req, res) => {
+    try {
+        const data = await getVPSList();
+        res.json(data); // Send full data to admin
+    } catch (e) {
+        res.status(500).json({ error: 'Failed to fetch VPS list' });
+    }
+});
+
+// POST: Add new VPS
+app.post('/api/admin/vps', authenticate, adminOnly, async (req, res) => {
+    try {
+        const { name, codespace_name, github_token, ram_gb, cpu_cores, os, rdp_username, rdp_password } = req.body;
+        const { data, error } = await supabase.from('vps_instances').insert([
+            { name, codespace_name, github_token, ram_gb, cpu_cores, os, rdp_username, rdp_password, status: 'Shutdown' }
+        ]).select().single();
+
+        if (error) throw error;
+        res.json(data);
+    } catch (e) {
+        res.status(500).json({ error: 'Failed to add VPS' });
+    }
+});
+
+// DELETE: Remove VPS
+app.delete('/api/admin/vps/:id', authenticate, adminOnly, async (req, res) => {
+    try {
+        const { error } = await supabase.from('vps_instances').delete().eq('id', req.params.id);
+        if (error) throw error;
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: 'Failed to delete VPS' });
+    }
+});
+
+// PUT: Update VPS Status (Maintenance override)
+app.put('/api/admin/vps/:id/status', authenticate, adminOnly, async (req, res) => {
+    try {
+        const { status } = req.body; // 'Maintenance' or 'Shutdown'
+        const { data, error } = await supabase.from('vps_instances')
+            .update({ status, user_id: null, locked_at: null }) // Unlocks if put in maintenance
+            .eq('id', req.params.id)
+            .select().single();
+
+        if (error) throw error;
+        res.json(data);
+    } catch (e) {
+        res.status(500).json({ error: 'Failed to update VPS status' });
     }
 });
 
