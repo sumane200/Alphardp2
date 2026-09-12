@@ -71,7 +71,13 @@ const getVPSById = async (id) => {
 // GET: List all VPS servers
 app.get('/api/vps/list', authenticate, async (req, res) => {
     try {
-        const data = await getVPSList();
+        let data = await getVPSList();
+        
+        // Free tier restriction
+        if (req.user.is_anonymous) {
+            data = data.slice(0, 2);
+        }
+
         // Don't send the full token to frontend for security
         const safeData = data.map(vps => {
             const isLockedByOther = vps.user_id && vps.user_id !== req.user.id;
