@@ -41,12 +41,18 @@ const novncProxy = createProxyMiddleware({
     pathRewrite: {
         '^/novnc-proxy': '/websockify' // rewrite path to match what pinggy/novnc expects
     },
+    headers: {
+        'x-Pinggy-No-Screen': '1',
+        'User-Agent': 'AlphaRDP-VNC-Client/1.0' // Non-standard user agent bypasses the screen
+    },
     onProxyReqWs: (proxyReq, req, socket, options, head) => {
-        // Inject the exact header pinggy requires to bypass the warning screen
-        proxyReq.setHeader('x-pinggy-no-screen', '1');
+        // Redundant but safe
+        proxyReq.setHeader('x-Pinggy-No-Screen', '1');
+        proxyReq.setHeader('User-Agent', 'AlphaRDP-VNC-Client/1.0');
     },
     onProxyReq: (proxyReq, req, res) => {
-        proxyReq.setHeader('x-pinggy-no-screen', '1');
+        proxyReq.setHeader('x-Pinggy-No-Screen', '1');
+        proxyReq.setHeader('User-Agent', 'AlphaRDP-VNC-Client/1.0');
     }
 });
 
