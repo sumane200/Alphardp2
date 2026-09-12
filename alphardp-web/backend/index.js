@@ -22,7 +22,8 @@ app.use(cors());
 app.use(express.json());
 
 // Proxy for noVNC WebSocket to bypass Pinggy interstitial
-app.use('/novnc-proxy', createProxyMiddleware({
+const novncProxy = createProxyMiddleware({
+    target: 'https://pinggy.link', // Dummy target required by HPM
     router: function(req) {
         return `https://${req.query.host}`;
     },
@@ -38,7 +39,9 @@ app.use('/novnc-proxy', createProxyMiddleware({
     onProxyReq: (proxyReq, req, res) => {
         proxyReq.setHeader('x-pinggy-no-screen', '1');
     }
-}));
+});
+
+app.use('/novnc-proxy', novncProxy);
 
 const authenticate = async (req, res, next) => {
     let token = req.headers['authorization']?.replace('Bearer ', '');
@@ -549,8 +552,11 @@ app.put('/api/admin/vps/:id/usage', authenticate, adminOnly, async (req, res) =>
     }
 });
 
-app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
+    
+    // Attach WebSocket upgrade for noVNC proxy
+    server.on('upgrade', novncProxy.upgrade);
     
     // Start Heartbeat monitor
     setInterval(async () => {
