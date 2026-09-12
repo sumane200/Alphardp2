@@ -469,26 +469,25 @@ app.put('/api/admin/vps/:id/visibility', authenticate, adminOnly, async (req, re
     }
 });
 
-// GET: Fetch Codespace usage via GitHub API
-app.get('/api/admin/vps/:id/usage', authenticate, adminOnly, async (req, res) => {
+// PUT: Update used_minutes manually
+app.put('/api/admin/vps/:id/usage', authenticate, adminOnly, async (req, res) => {
     try {
-        const vps = await getVPSById(req.params.id);
+        let { used_minutes } = req.body;
+        used_minutes = parseInt(used_minutes);
         
-        // 1. Get the username associated with this token
-        const userOut = await runCmd(`gh api /user`, { GH_TOKEN: `ghp_${vps.github_token}` });
-        const user = JSON.parse(userOut);
-        const username = user.login;
+        if (isNaN(used_minutes)) {
+            return res.status(400).json({ error: 'used_minutes must be an integer' });
+        }
 
-        // 2. Get the billing info for this user
-        const billingOut = await runCmd(`gh api /users/${username}/settings/billing/codespaces`, { GH_TOKEN: `ghp_${vps.github_token}` });
-        const billing = JSON.parse(billingOut);
+        const { data, error } = await supabase.from('vps_instances')
+            .update({ used_minutes })
+            .eq('id', req.params.id)
+            .select().single();
 
-        res.json({
-            total_billable_time_in_minutes: billing.total_billable_time_in_minutes || 0,
-            included_minutes: billing.included_minutes || 7200,
-        });
+        if (error) throw error;
+        res.json(data);
     } catch (e) {
-        res.status(500).json({ error: 'Failed to fetch usage. Ensure token has "user" scope.' });
+        res.status(500).json({ error: 'Failed to update usage limits' });
     }
 });
 
@@ -505,6 +504,10 @@ app.listen(PORT, '0.0.0.0', () => {
             for (const vps of servers) {
                 const lockTime = new Date(vps.locked_at).getTime();
                 const diffMins = (now - lockTime) / 60000;
+
+                // Increment the local usage tracker by 1 minute for this active server
+                const currentMins = vps.used_minutes || 0;
+                await supabase.from('vps_instances').update({ used_minutes: currentMins + 1 }).eq('id', vps.id);
 
                 // Rule B: Fully release lock after 59 minutes
                 if (diffMins >= 59) {
