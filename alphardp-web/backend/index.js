@@ -339,7 +339,7 @@ app.get('/api/vps/setup/stream/:id', authenticate, async (req, res) => {
         
         const bashScript = `
 if ! command -v websockify &> /dev/null; then
-    sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y novnc websockify tigervnc-standalone-server
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y novnc websockify tigervnc-standalone-server
 fi
 
 mkdir -p ~/.vnc
@@ -354,7 +354,7 @@ pkill -f pinggy 2>/dev/null || true
 rm -f /tmp/vps-pinggy.log /tmp/vps-pinggy-web.log
 
 vncserver :1 -geometry 1280x720 -depth 24 -localhost no
-websockify --web /usr/share/novnc/ 6080 localhost:5901 &
+websockify --web /usr/share/novnc/ 6080 localhost:5901 >/dev/null 2>&1 </dev/null &
 
 setsid ssh -p 443 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -R0:localhost:3389 tcp@a.pinggy.io >/tmp/vps-pinggy.log 2>&1 </dev/null &
 setsid ssh -p 443 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -R0:localhost:6080 a.pinggy.io >/tmp/vps-pinggy-web.log 2>&1 </dev/null &
@@ -374,14 +374,15 @@ sleep 3
             { GH_TOKEN: `ghp_${vps.github_token}` }
         );
 
-        res.write('data: [SYSTEM] ✓ VPS is ACTIVE! Click [ GET RDP ] to get your connection address.\n\n');
+        res.write('data: [SYSTEM] ✓ VPS is ACTIVE! Click [ GET RDP ] or [ Launch in Browser ].\n\n');
         res.end();
 
         // Handle client disconnect (no spawned child anymore)
         req.on('close', () => {});
 
     } catch (e) {
-        res.write(`data: [SYSTEM] Stream error: ${e.message}\n\n`);
+        const errorMsg = e.stderr || (e.error ? e.error.message : null) || e.message || JSON.stringify(e);
+        res.write(`data: [SYSTEM] Stream error: ${errorMsg}\n\n`);
         res.end();
     }
 });
