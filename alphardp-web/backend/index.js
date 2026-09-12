@@ -361,8 +361,9 @@ setsid ssh -p 443 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -R0:loca
 sleep 3
 `;
 
+        const bashScriptBase64 = Buffer.from(bashScript).toString('base64');
         await runCmd(
-            `gh cs ssh -c "${vps.codespace_name}" -- "cat << 'EOF' > /tmp/start_tunnel.sh\n${bashScript}\nEOF"`,
+            `gh cs ssh -c "${vps.codespace_name}" -- "echo ${bashScriptBase64} | base64 -d > /tmp/start_tunnel.sh"`,
             { GH_TOKEN: `ghp_${vps.github_token}` }
         );
 
